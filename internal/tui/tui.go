@@ -3,9 +3,11 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/timer"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yourusername/multi-repo-dashboard/internal/config"
@@ -26,6 +28,11 @@ var (
 // Messages
 type statusMsg git.RepoStatus
 type refreshMsg struct{}
+type pullDoneMsg struct {
+	logs string
+	err  error
+}
+type clearToastMsg struct{}
 
 // item represents a list item
 type item struct {
@@ -46,12 +53,17 @@ func (i item) Description() string {
 func (i item) FilterValue() string { return i.status.Name }
 
 type model struct {
-	list     list.Model
-	spinner  spinner.Model
-	repos    []config.RepoConfig
-	statuses map[string]git.RepoStatus
-	width    int
-	height   int
+	list        list.Model
+	spinner     spinner.Model
+	repos       []config.RepoConfig
+	statuses    map[string]git.RepoStatus
+	width       int
+	height      int
+	isPulling   bool
+	isRefreshing bool
+	logs        string
+	toastMsg    string
+	timer       timer.Model
 }
 
 func NewModel(cfg *config.Config) tea.Model {
@@ -71,6 +83,7 @@ func NewModel(cfg *config.Config) tea.Model {
 		spinner:  s,
 		repos:    cfg.Repositories,
 		statuses: make(map[string]git.RepoStatus),
+		timer:    timer.NewWithInterval(0, time.Second),
 	}
 }
 
@@ -87,9 +100,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "p":
-			// Trigger Pull All action
+			if m.isPulling || m.isRefreshing {
+				return m, nil
+			}
+			m.isPulling = true
+			m.logs = ""
+			m.toastMsg = ""
 			return m, triggerPullAll(m.repos)
 		case "r":
+			if m.isPulling || m.isRefreshing {
+				return m, nil
+			}
+			m.isRefreshing = true
+			m.logs = ""
+			m.toastMsg = ""
 			return m, triggerRefresh()
 		}
 
@@ -99,10 +123,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetSize(msg.Width/3, msg.Height-4) // Left pane takes 1/3
 
 	case refreshMsg:
+		var cmdBatch []tea.Cmd
 		for _, repo := range m.repos {
-			cmds = append(cmds, checkRepoStatus(repo))
+			cmdBatch = append(cmdBatch, checkRepoStatus(repo))
 		}
+		// Also add a delayed message to clear the refreshing state
+		cmdBatch = append(cmdBatch, func() tea.Msg {
+			time.Sleep(500 * time.Millisecond) // Give it a little time for statuses to come back
+			return clearRefreshMsg{}
+		})
+		return m, tea.Batch(cmdBatch...)
+		
+	case clearRefreshMsg:
+		m.isRefreshing = false
+		m.toastMsg = "Repositories refreshed successfully!"
+		m.timer = timer.New(3 * time.Second)
+		return m, m.timer.Init()
 
+	case pullDoneMsg:
+		m.isPulling = false
+		m.logs = msg.logs
+		if msg.err != nil {
+			m.toastMsg = fmt.Sprintf("Pull failed: %v", msg.err)
+		} else {
+			m.toastMsg = "All repositories pulled successfully!"
+		}
+		m.timer = timer.New(3 * time.Second)
+		return m, tea.Batch(triggerRefresh(), m.timer.Init())
+		
+	case clearToastMsg:
+		m.toastMsg = ""
+		
+	case timer.TickMsg:
+		var cmd tea.Cmd
+		m.timer, cmd = m.timer.Update(msg)
+		return m, cmd
+		
+	case timer.TimeoutMsg:
+		m.toastMsg = ""
+		
 	case statusMsg:
 		m.statuses[msg.Name] = git.RepoStatus(msg)
 		// Update list item
@@ -136,7 +195,19 @@ func (m model) View() string {
 	details := m.renderDetails()
 	rightPane := paneStyle.Width(m.width - (m.width / 3) - 4).Height(m.height - 2).Render(details)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	view := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	
+	// Optional Toast/Logs Overlay
+	if m.toastMsg != "" {
+		toastStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("230")).
+			Padding(0, 1).
+			MarginTop(1)
+		view += "\n" + toastStyle.Render(" "+m.toastMsg+" ")
+	}
+	
+	return view
 }
 
 func (m model) renderDetails() string {
@@ -149,7 +220,16 @@ func (m model) renderDetails() string {
 	status := it.status
 
 	doc := strings.Builder{}
-	doc.WriteString(fmt.Sprintf("# %s\n\n", status.Name))
+	
+	// Header area with spinner if active
+	header := fmt.Sprintf("# %s\n\n", status.Name)
+	if m.isPulling {
+		header = fmt.Sprintf("# %s %s Pulling...\n\n", status.Name, m.spinner.View())
+	} else if m.isRefreshing {
+		header = fmt.Sprintf("# %s %s Refreshing...\n\n", status.Name, m.spinner.View())
+	}
+	doc.WriteString(header)
+	
 	doc.WriteString(fmt.Sprintf("Path: %s\n\n", status.Path))
 
 	if status.Error != nil {
@@ -174,8 +254,15 @@ func (m model) renderDetails() string {
 
 	doc.WriteString("\n\nCommands:\n[r] Refresh\n[p] Pull All Repositories\n[enter] Open Terminal Here (Coming soon)\n[q] Quit")
 
+	if m.logs != "" {
+		doc.WriteString("\n\nLogs:\n")
+		doc.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(m.logs))
+	}
+
 	return doc.String()
 }
+
+type clearRefreshMsg struct{}
 
 // Commands
 func checkRepoStatus(repo config.RepoConfig) tea.Cmd {
@@ -192,9 +279,22 @@ func triggerRefresh() tea.Cmd {
 
 func triggerPullAll(repos []config.RepoConfig) tea.Cmd {
 	return func() tea.Msg {
+		var allLogs strings.Builder
+		var lastErr error
+		
 		for _, repo := range repos {
-			git.Pull(repo.Path)
+			allLogs.WriteString(fmt.Sprintf("--- Pulling %s ---\n", repo.Name))
+			logs, err := git.Pull(repo.Path)
+			allLogs.WriteString(logs)
+			allLogs.WriteString("\n")
+			if err != nil {
+				lastErr = err
+			}
 		}
-		return refreshMsg{} // Refresh statuses after pulling
+		
+		return pullDoneMsg{
+			logs: allLogs.String(),
+			err:  lastErr,
+		}
 	}
 }

@@ -57,10 +57,11 @@ func CheckStatus(name, path string) RepoStatus {
 }
 
 // Pull executes git pull on the specified repository
-func Pull(path string) error {
+func Pull(path string) (string, error) {
 	cmd := exec.Command("git", "-C", path, "pull", "--rebase")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git pull failed: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("git pull failed: %w", err)
 	}
-	return nil
+	return string(out), nil
 }
