@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -21,7 +23,25 @@ var dashboardCmd = &cobra.Command{
 		}
 
 		if len(cfg.Repositories) == 0 {
-			return fmt.Errorf("no repositories configured. Please add them to your config file")
+			// Check if config file exists
+			configFile := viper.ConfigFileUsed()
+			if configFile == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("no repositories configured and couldn't determine home directory")
+				}
+				configFile = filepath.Join(home, ".config", "mrd", "config.yaml")
+			}
+
+			// Create default config if it doesn't exist
+			if _, err := os.Stat(configFile); os.IsNotExist(err) {
+				if err := config.CreateDefaultConfig(configFile); err != nil {
+					return fmt.Errorf("no repositories configured. Please add them to your config file at %s", configFile)
+				}
+				return fmt.Errorf("no repositories configured. Created default config at %s. Please edit it and add your repositories, or use 'mrd repo add' command", configFile)
+			}
+
+			return fmt.Errorf("no repositories configured. Please add them to your config file at %s, or use 'mrd repo add' command", configFile)
 		}
 
 		p := tea.NewProgram(tui.NewModel(&cfg), tea.WithAltScreen())
