@@ -1,6 +1,6 @@
 ---
 filename: "_ai/backlog/active/260310_1913__IMPLEMENTATION_PLAN__git-agent-tui.md"
-title: "Multi-Repo AI Git Dashboard (TUI)"
+title: "multi-repo-dashboard (TUI)"
 createdAt: 2026-03-10 19:13
 updatedAt: 2026-03-10 19:13
 status: draft
@@ -15,7 +15,7 @@ When managing multiple local Git repositories—especially when autonomous AI ag
 
 ## 2. Project Environment Details
 ```
-- Project Name: multi-repo-ai-orchestrator (Executable: mrao)
+- Project Name: multi-repo-dashboard (Executable: mrd)
 - Language: Go 1.23+
 - Framework: Cobra (CLI), Viper (Config)
 - TUI Stack: Bubble Tea (Core), Bubbles (Components), Lipgloss (Styling)
@@ -36,7 +36,7 @@ This phase establishes the Go standard layout and initializes the Cobra/Viper CL
 
 ```go
 // [NEW FILE] go.mod
-module github.com/yourusername/multi-repo-ai-orchestrator
+module github.com/yourusername/multi-repo-dashboard
 
 go 1.23
 
@@ -57,7 +57,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yourusername/multi-repo-ai-orchestrator/cmd"
+	"github.com/yourusername/multi-repo-dashboard/cmd"
 )
 
 func main() {
@@ -231,8 +231,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss/v2"
-	"github.com/yourusername/multi-repo-ai-orchestrator/internal/config"
-	"github.com/yourusername/multi-repo-ai-orchestrator/internal/git"
+	"github.com/yourusername/multi-repo-dashboard/internal/config"
+	"github.com/yourusername/multi-repo-dashboard/internal/git"
 )
 
 // Styling definitions (Tiling)
@@ -437,8 +437,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/yourusername/multi-repo-ai-orchestrator/internal/config"
-	"github.com/yourusername/multi-repo-ai-orchestrator/internal/tui"
+	"github.com/yourusername/multi-repo-dashboard/internal/config"
+	"github.com/yourusername/multi-repo-dashboard/internal/tui"
 )
 
 var dashboardCmd = &cobra.Command{
@@ -512,11 +512,11 @@ Create a report using the exact requested structure to document the successful i
 ```yaml
 ---
 filename: "_ai/backlog/reports/{YYMMDD_HHmm}__IMPLEMENTATION_REPORT__git-agent-tui.md"
-title: "Report: Multi-Repo AI Git Dashboard (TUI)"
+title: "Report: multi-repo-dashboard (TUI)"
 createdAt: YYYY-MM-DD HH:mm
 updatedAt: YYYY-MM-DD HH:mm
 planFile: "_ai/backlog/active/{YYMMDD_HHmm}__IMPLEMENTATION_PLAN__git-agent-tui.md"
-project: "multi-repo-ai-orchestrator"
+project: "multi-repo-dashboard"
 status: completed
 filesCreated: 0
 filesModified: 0
