@@ -100,7 +100,7 @@ import (
 var cfgFile string
 
 var rootCmd = &cobra.Command{
-	Use:   "mrao",
+	Use:   "mrd",
 	Short: "Multi-Repo AI Orchestrator Dashboard",
 	Long:  `A TUI dashboard for monitoring and orchestrating multi-repository AI coding agents.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args[]string) error {
@@ -113,7 +113,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.config/mrao/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.config/mrd/config.yaml)")
 }
 
 func initConfig() error {
@@ -124,7 +124,7 @@ func initConfig() error {
 		if err != nil {
 			return err
 		}
-		viper.AddConfigPath(filepath.Join(home, ".config", "mrao"))
+		viper.AddConfigPath(filepath.Join(home, ".config", "mrd"))
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
 	}
@@ -475,24 +475,24 @@ Create user documentation and a sample configuration.
 
 ```markdown
 // [NEW FILE] README.md
-# Multi-Repo AI Orchestrator (MRAO)
+# Multi-Repo AI Orchestrator (mrd)
 
 A highly responsive TUI dashboard written in Go/Bubble Tea for monitoring local Git repositories touched by autonomous AI coding agents.
 
 ## Setup
 
-1. Create a configuration file at `~/.config/mrao/config.yaml`:
+1. Create a configuration file at `~/.config/mrd/config.yaml`:
 ```yaml
 repositories:
-  - name: mrao-core
-    path: /home/user/projects/mrao
+  - name: mrd-core
+    path: /home/user/projects/mrd
   - name: api-backend
     path: /home/user/projects/api-backend
 ```
 
 2. Run the dashboard:
 ```bash
-mrao dashboard
+mrd dashboard
 ```
 
 ## Shortcuts
