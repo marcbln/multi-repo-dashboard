@@ -283,7 +283,7 @@ func NewModel(cfg *config.Config) tea.Model {
 	}
 
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "AI Watched Repositories"
+	l.Title = "Watched Repositories"
 	
 	s := spinner.New()
 	s.Spinner = spinner.Dot

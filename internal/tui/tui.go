@@ -5,284 +5,163 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/timer"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 	"github.com/yourusername/multi-repo-dashboard/internal/config"
 	"github.com/yourusername/multi-repo-dashboard/internal/git"
 )
 
-// Styling definitions (Tiling)
-var (
-	paneStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			Padding(1, 2)
-
-	dirtyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // Red
-	cleanStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green
-	syncStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // Yellow
-)
-
-// Messages
-type statusMsg git.RepoStatus
-type refreshMsg struct{}
-type pullDoneMsg struct {
-	logs string
-	err  error
-}
-type clearToastMsg struct{}
-
-// item represents a list item
-type item struct {
-	status git.RepoStatus
-}
-
-func (i item) Title() string { return i.status.Name }
-func (i item) Description() string {
-	if i.status.Error != nil {
-		return "Error: " + i.status.Error.Error()
-	}
-	state := "Clean"
-	if i.status.IsDirty {
-		state = "Dirty ⚠️"
-	}
-	return fmt.Sprintf("%s | Branch: %s", state, i.status.CurrentBranch)
-}
-func (i item) FilterValue() string { return i.status.Name }
-
-type model struct {
-	list        list.Model
-	spinner     spinner.Model
+// App represents the TUI application
+type App struct {
+	app         *tview.Application
+	repoList    *tview.List
+	detailsView *tview.TextView
+	flex        *tview.Flex
 	repos       []config.RepoConfig
 	statuses    map[string]git.RepoStatus
-	width       int
-	height      int
 	isPulling   bool
 	isRefreshing bool
 	logs        string
 	toastMsg    string
-	timer       timer.Model
+	toastTimer  *time.Timer
 }
 
-func NewModel(cfg *config.Config) tea.Model {
-	items := make([]list.Item, 0)
-	for _, r := range cfg.Repositories {
-		items = append(items, item{status: git.RepoStatus{Name: r.Name, Path: r.Path}})
+// NewApp creates a new TUI application
+func NewApp(cfg *config.Config) *App {
+	app := tview.NewApplication()
+	
+	// Create repository list (left pane)
+	repoList := tview.NewList()
+	repoList.ShowSecondaryText(true)
+	repoList.SetBorder(true)
+	repoList.SetTitle("Watched Repositories")
+	repoList.SetHighlightFullLine(true)
+	repoList.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorGreen).Foreground(tcell.ColorBlack))
+	
+	// Create details view (right pane)
+	detailsView := tview.NewTextView()
+	detailsView.SetDynamicColors(true)
+	detailsView.SetBorder(true)
+	detailsView.SetTitle("Repository Details")
+	detailsView.SetScrollable(true)
+	
+	// Create main flex layout
+	flex := tview.NewFlex()
+	flex.AddItem(repoList, 0, 1, true)  // Left pane takes 1/3
+	flex.AddItem(detailsView, 0, 2, false) // Right pane takes 2/3
+	
+	tuiApp := &App{
+		app:         app,
+		repoList:    repoList,
+		detailsView: detailsView,
+		flex:        flex,
+		repos:       cfg.Repositories,
+		statuses:    make(map[string]git.RepoStatus),
 	}
-
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "AI Watched Repositories"
-
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-
-	return model{
-		list:     l,
-		spinner:  s,
-		repos:    cfg.Repositories,
-		statuses: make(map[string]git.RepoStatus),
-		timer:    timer.NewWithInterval(0, time.Second),
+	
+	// Set up input capture for global keybindings
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyCtrlC, tcell.KeyEscape:
+			if event.Rune() == 'q' || event.Key() == tcell.KeyCtrlC || event.Key() == tcell.KeyEscape {
+				app.Stop()
+				return nil
+			}
+		case tcell.KeyRune:
+			switch event.Rune() {
+			case 'q':
+				app.Stop()
+				return nil
+			case 'r':
+				if !tuiApp.isPulling && !tuiApp.isRefreshing {
+					tuiApp.refreshAll()
+				}
+				return nil
+			case 'p':
+				if !tuiApp.isPulling && !tuiApp.isRefreshing {
+					tuiApp.pullAll()
+				}
+				return nil
+			}
+		}
+		return event
+	})
+	
+	// Set up list selection handler
+	repoList.SetSelectedFunc(func(index int, name string, secondary string, shortcut rune) {
+		tuiApp.updateDetails(index)
+	})
+	
+	// Populate initial repository list
+	for _, repo := range cfg.Repositories {
+		repoList.AddItem(repo.Name, "Loading...", 'r', nil)
 	}
+	
+	// Start initial refresh
+	tuiApp.refreshAll()
+	
+	return tuiApp
 }
 
-func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, triggerRefresh())
+// Run starts the TUI application
+func (a *App) Run() error {
+	return a.app.SetRoot(a.flex, true).EnableMouse(true).Run()
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "p":
-			if m.isPulling || m.isRefreshing {
-				return m, nil
-			}
-			m.isPulling = true
-			m.logs = ""
-			m.toastMsg = ""
-			return m, triggerPullAll(m.repos)
-		case "r":
-			if m.isPulling || m.isRefreshing {
-				return m, nil
-			}
-			m.isRefreshing = true
-			m.logs = ""
-			m.toastMsg = ""
-			return m, triggerRefresh()
+// refreshAll triggers status refresh for all repositories
+func (a *App) refreshAll() {
+	a.isRefreshing = true
+	a.showToast("Refreshing repositories...")
+	
+	// Run refresh in background goroutine
+	go func() {
+		defer func() {
+			a.app.QueueUpdateDraw(func() {
+				a.isRefreshing = false
+			})
+		}()
+		
+		for _, repo := range a.repos {
+			status := git.CheckStatus(repo.Name, repo.Path)
+			a.statuses[repo.Name] = status
+			
+			// Update UI in main thread
+			a.app.QueueUpdateDraw(func() {
+				a.updateRepoItem(repo.Name, status)
+				selectedIndex := a.repoList.GetCurrentItem()
+				if selectedIndex >= 0 && selectedIndex < len(a.repos) {
+					if a.repos[selectedIndex].Name == repo.Name {
+						a.updateDetails(selectedIndex)
+					}
+				}
+			})
 		}
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.list.SetSize(msg.Width/3, msg.Height-4) // Left pane takes 1/3
-
-	case refreshMsg:
-		var cmdBatch []tea.Cmd
-		for _, repo := range m.repos {
-			cmdBatch = append(cmdBatch, checkRepoStatus(repo))
-		}
-		// Also add a delayed message to clear the refreshing state
-		cmdBatch = append(cmdBatch, func() tea.Msg {
-			time.Sleep(500 * time.Millisecond) // Give it a little time for statuses to come back
-			return clearRefreshMsg{}
+		
+		// Show completion message
+		a.app.QueueUpdateDraw(func() {
+			a.showToast("Repositories refreshed successfully!")
 		})
-		return m, tea.Batch(cmdBatch...)
-		
-	case clearRefreshMsg:
-		m.isRefreshing = false
-		m.toastMsg = "Repositories refreshed successfully!"
-		m.timer = timer.New(3 * time.Second)
-		return m, m.timer.Init()
-
-	case pullDoneMsg:
-		m.isPulling = false
-		m.logs = msg.logs
-		if msg.err != nil {
-			m.toastMsg = fmt.Sprintf("Pull failed: %v", msg.err)
-		} else {
-			m.toastMsg = "All repositories pulled successfully!"
-		}
-		m.timer = timer.New(3 * time.Second)
-		return m, tea.Batch(triggerRefresh(), m.timer.Init())
-		
-	case clearToastMsg:
-		m.toastMsg = ""
-		
-	case timer.TickMsg:
-		var cmd tea.Cmd
-		m.timer, cmd = m.timer.Update(msg)
-		return m, cmd
-		
-	case timer.TimeoutMsg:
-		m.toastMsg = ""
-		
-	case statusMsg:
-		m.statuses[msg.Name] = git.RepoStatus(msg)
-		// Update list item
-		items := m.list.Items()
-		for i, it := range items {
-			if it.(item).status.Name == msg.Name {
-				items[i] = item{status: git.RepoStatus(msg)}
-			}
-		}
-		m.list.SetItems(items)
-	}
-
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	cmds = append(cmds, cmd)
-
-	m.spinner, cmd = m.spinner.Update(msg)
-	cmds = append(cmds, cmd)
-
-	return m, tea.Batch(cmds...)
+	}()
 }
 
-func (m model) View() string {
-	if m.width == 0 {
-		return "Initializing..."
-	}
-
-	// Tiling: Join Left Pane (List) and Right Pane (Details)
-	leftPane := paneStyle.Width(m.width/3).Height(m.height - 2).Render(m.list.View())
-
-	details := m.renderDetails()
-	rightPane := paneStyle.Width(m.width - (m.width / 3) - 4).Height(m.height - 2).Render(details)
-
-	view := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+// pullAll triggers pull for all repositories
+func (a *App) pullAll() {
+	a.isPulling = true
+	a.logs = ""
+	a.showToast("Pulling all repositories...")
 	
-	// Optional Toast/Logs Overlay
-	if m.toastMsg != "" {
-		toastStyle := lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230")).
-			Padding(0, 1).
-			MarginTop(1)
-		view += "\n" + toastStyle.Render(" "+m.toastMsg+" ")
-	}
-	
-	return view
-}
-
-func (m model) renderDetails() string {
-	selected := m.list.SelectedItem()
-	if selected == nil {
-		return "No repository selected."
-	}
-
-	it := selected.(item)
-	status := it.status
-
-	doc := strings.Builder{}
-	
-	// Header area with spinner if active
-	header := fmt.Sprintf("# %s\n\n", status.Name)
-	if m.isPulling {
-		header = fmt.Sprintf("# %s %s Pulling...\n\n", status.Name, m.spinner.View())
-	} else if m.isRefreshing {
-		header = fmt.Sprintf("# %s %s Refreshing...\n\n", status.Name, m.spinner.View())
-	}
-	doc.WriteString(header)
-	
-	doc.WriteString(fmt.Sprintf("Path: %s\n\n", status.Path))
-
-	if status.Error != nil {
-		doc.WriteString(dirtyStyle.Render(fmt.Sprintf("Error: %v\n", status.Error)))
-		return doc.String()
-	}
-
-	doc.WriteString(fmt.Sprintf("Branch: %s\n", status.CurrentBranch))
-
-	if status.IsDirty {
-		doc.WriteString(dirtyStyle.Render("Status: DIRTY (Uncommitted changes)\n"))
-	} else {
-		doc.WriteString(cleanStyle.Render("Status: CLEAN\n"))
-	}
-
-	if status.NeedsPull {
-		doc.WriteString(syncStyle.Render("⬇️ Needs Pull\n"))
-	}
-	if status.NeedsPush {
-		doc.WriteString(syncStyle.Render("⬆️ Needs Push\n"))
-	}
-
-	doc.WriteString("\n\nCommands:\n[r] Refresh\n[p] Pull All Repositories\n[enter] Open Terminal Here (Coming soon)\n[q] Quit")
-
-	if m.logs != "" {
-		doc.WriteString("\n\nLogs:\n")
-		doc.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(m.logs))
-	}
-
-	return doc.String()
-}
-
-type clearRefreshMsg struct{}
-
-// Commands
-func checkRepoStatus(repo config.RepoConfig) tea.Cmd {
-	return func() tea.Msg {
-		return statusMsg(git.CheckStatus(repo.Name, repo.Path))
-	}
-}
-
-func triggerRefresh() tea.Cmd {
-	return func() tea.Msg {
-		return refreshMsg{}
-	}
-}
-
-func triggerPullAll(repos []config.RepoConfig) tea.Cmd {
-	return func() tea.Msg {
+	// Run pull in background goroutine
+	go func() {
+		defer func() {
+			a.app.QueueUpdateDraw(func() {
+				a.isPulling = false
+			})
+		}()
+		
 		var allLogs strings.Builder
 		var lastErr error
 		
-		for _, repo := range repos {
+		for _, repo := range a.repos {
 			allLogs.WriteString(fmt.Sprintf("--- Pulling %s ---\n", repo.Name))
 			logs, err := git.Pull(repo.Path)
 			allLogs.WriteString(logs)
@@ -292,9 +171,141 @@ func triggerPullAll(repos []config.RepoConfig) tea.Cmd {
 			}
 		}
 		
-		return pullDoneMsg{
-			logs: allLogs.String(),
-			err:  lastErr,
+		// Update UI in main thread
+		a.app.QueueUpdateDraw(func() {
+			a.logs = allLogs.String()
+			if lastErr != nil {
+				a.showToast(fmt.Sprintf("Pull failed: %v", lastErr))
+			} else {
+				a.showToast("All repositories pulled successfully!")
+			}
+			
+			// Refresh to show updated status
+			go a.refreshAll()
+			
+			// Update details view if a repo is selected
+			selectedIndex := a.repoList.GetCurrentItem()
+			if selectedIndex >= 0 {
+				a.updateDetails(selectedIndex)
+			}
+		})
+	}()
+}
+
+// updateRepoItem updates the list item for a repository
+func (a *App) updateRepoItem(repoName string, status git.RepoStatus) {
+	// Find the index of this repo in the list
+	for i, repo := range a.repos {
+		if repo.Name == repoName {
+			secondaryText := a.formatRepoStatus(status)
+			a.repoList.SetItemText(i, repoName, secondaryText)
+			break
 		}
 	}
+}
+
+// formatRepoStatus formats repository status for display
+func (a *App) formatRepoStatus(status git.RepoStatus) string {
+	if status.Error != nil {
+		return fmt.Sprintf("[red]Error: %s[-]", status.Error.Error())
+	}
+	
+	state := "[green]Clean[-]"
+	if status.IsDirty {
+		state = "[red]Dirty ⚠️[-]"
+	}
+	
+	secondary := fmt.Sprintf("%s | Branch: %s", state, status.CurrentBranch)
+	
+	if status.NeedsPull {
+		secondary += " | [yellow]⬇️ Needs Pull[-]"
+	}
+	if status.NeedsPush {
+		secondary += " | [yellow]⬆️ Needs Push[-]"
+	}
+	
+	return secondary
+}
+
+// updateDetails updates the details view for the selected repository
+func (a *App) updateDetails(index int) {
+	if index < 0 || index >= len(a.repos) {
+		a.detailsView.SetText("No repository selected.")
+		return
+	}
+	
+	repo := a.repos[index]
+	status, exists := a.statuses[repo.Name]
+	if !exists {
+		a.detailsView.SetText(fmt.Sprintf("Loading status for %s...", repo.Name))
+		return
+	}
+	
+	content := a.formatDetailsContent(status)
+	a.detailsView.SetText(content)
+}
+
+// formatDetailsContent formats the detailed content for a repository
+func (a *App) formatDetailsContent(status git.RepoStatus) string {
+	var content strings.Builder
+	
+	// Header with loading indicator
+	header := fmt.Sprintf("[#ff0000::b]%s[-]", status.Name)
+	if a.isPulling {
+		header += " [yellow]Pulling...[-]"
+	} else if a.isRefreshing {
+		header += " [yellow]Refreshing...[-]"
+	}
+	content.WriteString(header)
+	content.WriteString("\n\n")
+	
+	content.WriteString(fmt.Sprintf("Path: %s\n\n", status.Path))
+	
+	if status.Error != nil {
+		content.WriteString(fmt.Sprintf("[red]Error: %v[-]\n", status.Error))
+		return content.String()
+	}
+	
+	content.WriteString(fmt.Sprintf("Branch: %s\n", status.CurrentBranch))
+	
+	if status.IsDirty {
+		content.WriteString("[red]Status: DIRTY (Uncommitted changes)[-]\n")
+	} else {
+		content.WriteString("[green]Status: CLEAN[-]\n")
+	}
+	
+	if status.NeedsPull {
+		content.WriteString("[yellow]⬇️ Needs Pull[-]\n")
+	}
+	if status.NeedsPush {
+		content.WriteString("[yellow]⬆️ Needs Push[-]\n")
+	}
+	
+	content.WriteString("\n\nCommands:\n[r] Refresh\n[p] Pull All Repositories\n[enter] Open Terminal Here (Coming soon)\n[q] Quit")
+	
+	if a.logs != "" {
+		content.WriteString("\n\nLogs:\n")
+		content.WriteString("[gray]")
+		content.WriteString(a.logs)
+		content.WriteString("[-]")
+	}
+	
+	return content.String()
+}
+
+// showToast displays a temporary toast message
+func (a *App) showToast(message string) {
+	a.toastMsg = message
+	
+	// Clear existing timer
+	if a.toastTimer != nil {
+		a.toastTimer.Stop()
+	}
+	
+	// Set new timer to clear toast after 3 seconds
+	a.toastTimer = time.AfterFunc(3*time.Second, func() {
+		a.app.QueueUpdateDraw(func() {
+			a.toastMsg = ""
+		})
+	})
 }

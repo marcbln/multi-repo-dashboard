@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/yourusername/multi-repo-dashboard/internal/config"
@@ -44,8 +43,8 @@ var dashboardCmd = &cobra.Command{
 			return fmt.Errorf("no repositories configured. Please add them to your config file at %s, or use 'mrd repo add' command", configFile)
 		}
 
-		p := tea.NewProgram(tui.NewModel(&cfg), tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
+		app := tui.NewApp(&cfg)
+		if err := app.Run(); err != nil {
 			return fmt.Errorf("error running dashboard: %w", err)
 		}
 
